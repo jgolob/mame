@@ -143,14 +143,16 @@ with open('${specimen}.collector.csv', 'wt') as collect_h:
         'reads_total',
         'esv_total',
         'esv_singleton',
-        'goods'
+        'goods',
+        'threshold'
     ])
     for r in rareifaction_curve:
         collect_w.writerow([
             r[0],
             r[1],
             r[2],
-            r[3]
+            r[3],
+            saturation_reads
         ])
 
 with open('${specimen}.esv_counts.csv', 'wt') as esv_count_h:
