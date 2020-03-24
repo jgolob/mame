@@ -10,6 +10,7 @@ nextflow.preview.dsl=2
 // Containers
 container__vsearch = "golob/vsearch:2.7.1_bcw_0.2.0"
 container__fastatools = "quay.io/fhcrc-microbiome/fastatools:0.7.1__bcw.0.3.2"
+container__fastcombineseqtab = "golob/dada2-fast-combineseqtab:0.5.0__1.12.0__BCW_0.3.1"
 
 // Default values for boolean flags
 // If these are not set by the user, then they will be set to the values below
@@ -136,14 +137,13 @@ with gzip.open('${Reads}', 'rt') as fasta_h:
         ])
         if saturation_reads is None and total_reads > ${params.collector_min_reads} and abs(rareifaction_curve[-1][3] - rareifaction_curve[-2][3]) <= ${params.collector_iteration_cutoff}:
             saturation_reads = total_reads
-            break
 with open('${specimen}.collector.csv', 'wt') as collect_h:
     collect_w =  csv.writer(collect_h)
     collect_w.writerow([
         'reads_total',
         'esv_total',
         'esv_singleton',
-        'esv_f_non_singleton'
+        'goods'
     ])
     for r in rareifaction_curve:
         collect_w.writerow([
@@ -166,6 +166,84 @@ with open('${specimen}.esv_counts.csv', 'wt') as esv_count_h:
         ])
 
 print(saturation_reads)
+"""
+}
+
+process filter_counts_by_threshold {
+    container "${container__fastatools}"
+    label = 'io_limited'
+    publishDir "${params.output}/filtered_counts/", mode: 'copy'
+
+    input:
+        tuple specimen, val(threshold), file(Reads), file(esv_count), file(collector)
+    
+    output:
+        tuple specimen, file("${specimen}.esv_count_filtered.csv")
+        
+
+"""
+#!/usr/bin/env python3
+
+import csv
+with open('${specimen}.esv_count_filtered.csv', 'wt') as out_h:
+    out_w = csv.writer(out_h)
+    esv_count_r = csv.reader(
+        open('${esv_count}', 'rt')
+    )
+    header = next(esv_count_r)
+    out_w.writerow(header)
+    out_w.writerows(
+        [
+            r for r in esv_count_r
+            if int(r[1]) >= (${threshold} / 3)
+        ]
+    )
+
+
+"""
+}
+
+process combine_esv_counts {
+    container "${container__fastcombineseqtab}"
+    label = 'io_limited'
+    publishDir "${params.output}/", mode: 'copy'
+
+    input:
+        file(esv_counts)
+    
+    output:
+        file("seqtab.csv")
+        
+
+"""
+#!/usr/bin/env python3
+
+import pandas as pd
+import csv
+import random
+
+esv_count_files = "${esv_counts}".split()
+random.shuffle(esv_count_files)
+total_counts_d = {}
+for ecf in esv_count_files:
+    ecf_r = csv.reader(open(ecf, 'rt'))
+    specimen = next(ecf_r)[1]
+    total_counts_d[specimen] = {
+        r[0]: r[1]
+        for r in ecf_r
+    }
+
+seqtab = pd.DataFrame(total_counts_d).fillna(0).astype(int)
+
+# Get rid of empty specimens
+
+seqtab = seqtab[
+    seqtab.columns[seqtab.sum() > 0]
+]
+# Get rid of global singletons
+seqtab = seqtab.loc[(seqtab.T > 0).sum() > 0]
+seqtab.to_csv('seqtab.csv')
+
 """
 }
 
@@ -201,7 +279,7 @@ workflow {
             converged: true
         }
     
-    saturation_thresholds.converged
+    saturation_thresholds_passed = saturation_thresholds.converged
         .map{ r-> [
             r[0],
             r[1].toInteger(),
@@ -209,6 +287,15 @@ workflow {
             file(r[3]),
             file(r[4])
         ]}
-        .view()
+    
+    filtered_counts = filter_counts_by_threshold(saturation_thresholds_passed)
+    
+    combine_esv_counts(
+            filtered_counts
+        .map { r -> file(r[1]) }
+        .toList()
+    )
+
+
     
 }
